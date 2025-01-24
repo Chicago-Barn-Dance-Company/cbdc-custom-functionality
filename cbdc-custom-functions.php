@@ -19,7 +19,7 @@ function cbdc_init() {
 	// present inputs for event date, band, and caller
 	add_action ( 'quick_edit_custom_box', 'cbdc_add_quick_edit', 10, 2 );
 	// update event date, band, and caller
-	add_action ( 'save_post', 'cbdc_save_quick_edit_data', 10, 2 );
+	add_action ( 'save_post', 'cbdc_save_quick_edit_data', 10, 3 );
 	// enqueue edit script to admin screens
 	add_action ( 'admin_print_scripts-edit.php', 'cbdc_enqueue_edit_scripts' );
 	
@@ -179,22 +179,27 @@ function cbdc_add_quick_edit($column_name, $post_type) {
 /**
  * Save data from the Quick Edit to the database.
  */
-function cbdc_save_quick_edit_data($post_id, $post) {
+function cbdc_save_quick_edit_data($post_id, $post, $update) {
 	// verify if this is an auto save routine. If it is, our form has not been submitted, so exit
 	if (defined ( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE)
 		return $post_id;
 	
+
+        // LABEL:magicquotes
+        // remove WordPress `magical` slashes - we work around it ourselves
+        $_POST = stripslashes_deep( $_POST );
+	
 	$event_posttype = 'ai1ec_event';
 	if ($event_posttype !== $_POST ['post_type'])
-		return;
+		return null;
 	if (! current_user_can ( 'edit_ai1ec_event', $post_id ))
-		return $post_id;
+		return $post;
 	
 	$_POST += array (
 			"cbdc_event_quick_edit_nonce" => '' 
 	);
 	if (! wp_verify_nonce ( $_POST ["cbdc_event_quick_edit_nonce"], plugin_basename ( __FILE__ ) ))
-		return;
+		return null;
 	
 	if (isset ( $_POST ['band'] )) {
 		update_post_meta ( $post_id, 'Band', $_POST ["band"] );
@@ -204,32 +209,43 @@ function cbdc_save_quick_edit_data($post_id, $post) {
 	}
 	
 	if (isset ( $_POST ['ai1ec_event_date'] )) {
-		global $ai1ec_events_helper;
-		
 		$ai1ec_event_date_entered = $_POST ['ai1ec_event_date'];
 		$entered_datetime = new DateTime ( $ai1ec_event_date_entered );
 		$entered_date = $entered_datetime->format ( 'U' ); // this date is at midnight
 		
-		$event = new Ai1ec_Event ( $post_id );
+
+	        $data = $this->_parse_post_to_event( $post_id );
+        	if ( ! $data ) {
+            	   return null;
+        	}
+		// tood does this work?
+		$event        = $data['event'];
 		
-		/*
+		/* TODO update this comment once something starts working here
 		 * Get entered date, preserve the old time, and modify both the start and end of the ai1ec event, leaving the same time in place. Example: an event originally scheduled for February 2nd from 7-9:30 pm is cloned using the Events menu. When the date is changed from 2/2/2018 to 3/2/2018, the new start time should be 3/2/2018 at 7 pm and the end time 3/2/2018 at 9:30 pm.
 		 */
-		$old_start_date = $ai1ec_events_helper->gmt_to_local ( $event->start );
+		$old_start_date = $event->get('start');
 		$old_start_time_offset = $old_start_date % 86400; // get the time offset from midnight of the old date
 		$new_start_date = $entered_date + $old_start_time_offset; // add the time offset
-		$event->start = $ai1ec_events_helper->local_to_gmt ( $new_start_date ); // ai1ec stores GMT
+		$event->set('start', $new_start_date ); 
 		
-		$old_end_date = $ai1ec_events_helper->gmt_to_local ( $event->end );
+		$old_end_date = $event->get('end');
 		$old_end_time_offset = $old_end_date % 86400; // get the time offset from midnight of the old date
 		$new_end_date = $entered_date + $old_end_time_offset; // add the time offset
-		$event->end = $ai1ec_events_helper->local_to_gmt ( $new_end_date ); // ai1ec stores GMT
-		
+		$event->set('end', $new_end_date ); // ai1ec stores GMT
+
+	        do_action( 'ai1ec_save_post', $event );
 		$event->save ( TRUE ); // TRUE means update, don't create new
 		                       
 		// reset the cache
-		$ai1ec_events_helper->delete_event_cache ( $post_id );
-		$ai1ec_events_helper->cache_event ( $event );
+		//$ai1ec_events_helper->delete_event_cache ( $post_id );
+		//$ai1ec_events_helper->cache_event ( $event );
+
+        	// LABEL:magicquotes
+        	// restore `magic` WordPress quotes to maintain compatibility
+        	$_POST = add_magic_quotes( $_POST );
+
+		return $event;
 	}
 }
 function cbdc_enqueue_edit_scripts() {
