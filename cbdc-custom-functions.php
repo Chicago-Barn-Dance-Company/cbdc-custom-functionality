@@ -28,6 +28,7 @@ function cbdc_init() {
 	add_action ( 'dp_duplicate_page', 'cbdc_duplicate_add_four_weeks', 10, 2 ); // this was priority 20, but there's a strange bug in WP that makes that not work with nested action hooks
 }
 
+
 /**
  * Add custom columns (ai1ec date, caller, band) to the All Events listing
  */
@@ -180,15 +181,16 @@ function cbdc_add_quick_edit($column_name, $post_type) {
  * Save data from the Quick Edit to the database.
  */
 function cbdc_save_quick_edit_data($post_id, $post, $update) {
+
 	// verify if this is an auto save routine. If it is, our form has not been submitted, so exit
 	if (defined ( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE)
 		return $post_id;
-	
 
-        // LABEL:magicquotes
-        // remove WordPress `magical` slashes - we work around it ourselves
-        $_POST = stripslashes_deep( $_POST );
-	
+
+	// LABEL:magicquotes
+	// remove WordPress `magical` slashes - we work around it ourselves
+	$_POST = stripslashes_deep( $_POST );
+
 	$event_posttype = 'ai1ec_event';
 	if ($event_posttype !== $_POST ['post_type'])
 		return null;
@@ -196,7 +198,7 @@ function cbdc_save_quick_edit_data($post_id, $post, $update) {
 		return $post;
 	
 	$_POST += array (
-			"cbdc_event_quick_edit_nonce" => '' 
+		"cbdc_event_quick_edit_nonce" => '' 
 	);
 	if (! wp_verify_nonce ( $_POST ["cbdc_event_quick_edit_nonce"], plugin_basename ( __FILE__ ) ))
 		return null;
@@ -210,42 +212,44 @@ function cbdc_save_quick_edit_data($post_id, $post, $update) {
 	
 	if (isset ( $_POST ['ai1ec_event_date'] )) {
 		$ai1ec_event_date_entered = $_POST ['ai1ec_event_date'];
-		$entered_datetime = new DateTime ( $ai1ec_event_date_entered );
-		$entered_date = $entered_datetime->format ( 'U' ); // this date is at midnight
-		
 
-	        $data = $this->_parse_post_to_event( $post_id );
-        	if ( ! $data ) {
-            	   return null;
-        	}
-		// tood does this work?
-		$event        = $data['event'];
-		
-		/* TODO update this comment once something starts working here
+
+
+		// Lacking a better way to get the original start and end date and time
+		// from the event object in WP/ai1ec-approved ways, let's stick our fingers
+		// into the database
+		global $wpdb;
+		$query = $wpdb->prepare("SELECT * FROM {$wpdb->prefix}ai1ec_events WHERE post_id = %s", $post_id);
+		$event_row = $wpdb->get_row($query);
+
+		/*
 		 * Get entered date, preserve the old time, and modify both the start and end of the ai1ec event, leaving the same time in place. Example: an event originally scheduled for February 2nd from 7-9:30 pm is cloned using the Events menu. When the date is changed from 2/2/2018 to 3/2/2018, the new start time should be 3/2/2018 at 7 pm and the end time 3/2/2018 at 9:30 pm.
 		 */
-		$old_start_date = $event->get('start');
-		$old_start_time_offset = $old_start_date % 86400; // get the time offset from midnight of the old date
-		$new_start_date = $entered_date + $old_start_time_offset; // add the time offset
-		$event->set('start', $new_start_date ); 
+		$tz = new DateTimeZone($event_row->timezone_name);
+		$entered_datetime = new DateTimeImmutable($ai1ec_event_date_entered, $tz);
+		$old_start_datetime = (new DateTimeImmutable("", $tz))->setTimestamp($event_row->start);
+
+		$hour = intval($old_start_datetime->format("H"));
+		$minute = intval($old_start_datetime->format("i"));
+		$new_start_datetime = $entered_datetime->setTime($hour, $minute); // add the time offset
+		$new_start_timestamp = $new_start_datetime->getTimestamp(); // ai1ec stores GMT
 		
-		$old_end_date = $event->get('end');
-		$old_end_time_offset = $old_end_date % 86400; // get the time offset from midnight of the old date
-		$new_end_date = $entered_date + $old_end_time_offset; // add the time offset
-		$event->set('end', $new_end_date ); // ai1ec stores GMT
-
-	        do_action( 'ai1ec_save_post', $event );
-		$event->save ( TRUE ); // TRUE means update, don't create new
+		$old_end_datetime = (new DateTimeImmutable("", $tz))->setTimestamp($event_row->end);
+		$old_duration = $old_start_datetime->diff($old_end_datetime);
+		$new_end_datetime = $new_start_datetime->add($old_duration);
+		$new_end_timestamp = $new_end_datetime->getTimestamp(); // ai1ec stores GMT
+		
+		$wpdb->update(
+			"{$wpdb->prefix}ai1ec_events",
+			array("start" => $new_start_timestamp, "end" => $new_end_timestamp),
+			array("post_id" => $post_id),
+			"%d",
+			"%d",
+		);
 		                       
-		// reset the cache
-		//$ai1ec_events_helper->delete_event_cache ( $post_id );
-		//$ai1ec_events_helper->cache_event ( $event );
-
-        	// LABEL:magicquotes
-        	// restore `magic` WordPress quotes to maintain compatibility
-        	$_POST = add_magic_quotes( $_POST );
-
-		return $event;
+		// LABEL:magicquotes
+		// restore `magic` WordPress quotes to maintain compatibility
+		$_POST = add_magic_quotes( $_POST );
 	}
 }
 function cbdc_enqueue_edit_scripts() {
